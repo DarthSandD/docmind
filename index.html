@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DocMind — retrieval-augmented answering over your own documents</title>
+<meta name="description" content="A retrieval-augmented generation system that answers questions from an indexed document set and cites the exact passage behind every claim. Built with FastAPI, ChromaDB and a local LLM.">
+<meta property="og:title" content="DocMind — retrieval-augmented answering over your own documents">
+<meta property="og:description" content="Answers grounded in retrieved passages, with a numbered citation back to the source. FastAPI, ChromaDB, local embeddings, local LLM.">
+<meta property="og:type" content="website">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#E9ECEF;
+    --paper-raised:#F2F4F6;
+    --ink:#14181D;
+    --ink-soft:#5A6472;
+    --ink-faint:#8C96A3;
+    --rule:#CBD2DA;
+    --cite:#C0453B;
+    --deep:#161B22;
+    --deep-ink:#DDE3EA;
+    --measure:66ch;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:Spectral,Georgia,serif; font-size:18px; line-height:1.62;
+    font-weight:400;
+  }
+  .wrap{max-width:1180px; margin:0 auto; padding:0 28px}
+  .mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+
+  /* ---------- language switch ---------- */
+  .lang{position:fixed; top:18px; right:18px; z-index:20; display:flex; gap:0;
+    background:var(--paper-raised); border:1px solid var(--rule); border-radius:2px; overflow:hidden}
+  .lang button{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.06em;
+    background:none; border:0; padding:7px 13px; color:var(--ink-faint); cursor:pointer;
+  }
+  .lang button[aria-pressed="true"]{background:var(--ink); color:var(--paper)}
+
+  /* ---------- masthead ---------- */
+  header.masthead{padding:78px 0 44px; border-bottom:1px solid var(--rule)}
+  .kicker{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink-soft); margin:0 0 20px}
+  h1{
+    font-size:clamp(44px,7.2vw,86px); line-height:.98; font-weight:500;
+    letter-spacing:-.028em; margin:0 0 22px; max-width:15ch;
+  }
+  .standfirst{font-size:clamp(19px,2.1vw,23px); color:var(--ink-soft); max-width:52ch; margin:0 0 30px; font-weight:300}
+  .links{display:flex; flex-wrap:wrap; gap:22px; font-family:"IBM Plex Mono",monospace; font-size:13.5px}
+  .links a{color:var(--ink); text-decoration:none; border-bottom:1.5px solid var(--cite); padding-bottom:2px}
+  .links a:hover{color:var(--cite)}
+  .links .quiet{color:var(--ink-faint); border-bottom-color:var(--rule)}
+
+  /* ---------- document grid with citation rail ---------- */
+  .doc{display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:56px; align-items:start}
+  @media (max-width:960px){ .doc{grid-template-columns:minmax(0,1fr); gap:0} .rail{display:none} }
+
+  section{padding:56px 0; border-bottom:1px solid var(--rule)}
+  section:last-of-type{border-bottom:0}
+  h2{font-size:clamp(26px,3.4vw,36px); font-weight:500; letter-spacing:-.02em; margin:0 0 18px; max-width:26ch}
+  h3{font-size:19px; font-weight:600; margin:34px 0 8px}
+  p{margin:0 0 18px; max-width:var(--measure)}
+  .lede{font-size:20px; font-weight:300; color:var(--ink-soft)}
+  sup.c{color:var(--cite); font-size:.72em; font-weight:600; padding-left:1px}
+  a.inline{color:var(--ink); border-bottom:1px solid var(--cite); text-decoration:none}
+
+  /* ---------- pipeline ---------- */
+  ol.pipe{list-style:none; counter-reset:step; margin:26px 0 0; padding:0; max-width:var(--measure)}
+  ol.pipe > li{
+    counter-increment:step; position:relative; padding:0 0 26px 46px; margin:0;
+  }
+  ol.pipe > li::before{
+    content:counter(step); position:absolute; left:0; top:2px;
+    font-family:"IBM Plex Mono",monospace; font-size:12px; color:var(--cite);
+    border:1px solid var(--rule); background:var(--paper-raised);
+    width:26px; height:26px; border-radius:50%; display:grid; place-items:center;
+  }
+  ol.pipe > li:not(:last-child)::after{
+    content:""; position:absolute; left:13px; top:32px; bottom:6px; width:1px; background:var(--rule);
+  }
+  ol.pipe b{display:block; font-weight:600; margin-bottom:3px}
+  ol.pipe span{color:var(--ink-soft)}
+
+  /* ---------- citation rail ---------- */
+  .rail{position:sticky; top:26px; margin-top:56px}
+  .rail h4{
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; font-weight:500;
+    color:var(--ink-faint); margin:0 0 14px; letter-spacing:.05em;
+  }
+  .card{
+    background:var(--paper-raised); border:1px solid var(--rule); border-radius:2px;
+    padding:13px 14px; margin-bottom:10px; font-size:13.5px; line-height:1.5; color:var(--ink-soft);
+  }
+  .card b{display:block; color:var(--ink); font-weight:600; font-size:13px; margin-bottom:4px}
+  .card .score{float:right; font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--cite)}
+  .card p{margin:0; max-width:none}
+  .rail .note{font-size:13px; color:var(--ink-faint); line-height:1.5; margin-top:16px}
+
+  /* ---------- figures ---------- */
+  figure{margin:30px 0 0}
+  figure img{width:100%; border:1px solid var(--rule); border-radius:2px; display:block; background:var(--paper-raised)}
+  figcaption{font-size:14px; color:var(--ink-soft); margin-top:11px; max-width:var(--measure)}
+
+  /* ---------- spec list ---------- */
+  dl.spec{margin:24px 0 0; border-top:1px solid var(--rule); max-width:var(--measure)}
+  dl.spec div{display:grid; grid-template-columns:190px minmax(0,1fr); gap:20px; padding:13px 0; border-bottom:1px solid var(--rule)}
+  dl.spec dt{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink-soft); margin:0}
+  dl.spec dd{margin:0}
+  @media (max-width:620px){ dl.spec div{grid-template-columns:1fr; gap:4px} }
+
+  code{font-family:"IBM Plex Mono",monospace; font-size:.86em; background:var(--paper-raised);
+    border:1px solid var(--rule); border-radius:2px; padding:1px 5px}
+
+  /* ---------- dark closing ---------- */
+  .closing{background:var(--deep); color:var(--deep-ink); margin-top:0; border-bottom:0}
+  .closing .wrap{padding-top:64px; padding-bottom:64px}
+  .closing h2{color:#fff}
+  .closing p{color:#A9B4C0; max-width:var(--measure)}
+  .closing .links a{color:#fff; border-bottom-color:var(--cite)}
+  .closing .links .quiet{color:#6E7B89; border-bottom-color:#2C3540}
+  footer{padding:30px 0 60px; font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--ink-faint)}
+  [hidden]{display:none !important}
+  @media (prefers-reduced-motion:reduce){ *{transition:none !important; animation:none !important} }
+</style>
+</head>
+<body>
+
+<div class="lang" role="group" aria-label="Language">
+  <button id="btn-en" onclick="setLang('en')" aria-pressed="true">EN</button>
+  <button id="btn-id" onclick="setLang('id')" aria-pressed="false">ID</button>
+</div>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="kicker mono">DocMind · retrieval-augmented generation</p>
+    <h1 class="t" data-en="A machine that answers only from what it has read."
+        data-id="Mesin yang menjawab hanya dari apa yang sudah dibacanya."></h1>
+    <p class="standfirst t"
+       data-en="DocMind indexes a set of documents, retrieves the passages that actually bear on a question, and writes its answer from those passages alone — marking every claim with the source it came from."
+       data-id="DocMind mengindeks sekumpulan dokumen, mengambil bagian yang benar-benar relevan dengan pertanyaan, lalu menyusun jawaban hanya dari bagian tersebut — setiap pernyataan ditandai dengan sumber asalnya."></p>
+    <div class="links">
+      <a href="http://129.225.4.69" target="_blank" rel="noopener">Live demo</a>
+      <a href="https://github.com/DarthSandD/docmind" target="_blank" rel="noopener">Source</a>
+      <span class="quiet">FastAPI · ChromaDB · local LLM</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+<div class="doc">
+
+  <div class="main">
+
+    <section id="problem">
+      <h2 class="t" data-en="A language model will answer any question. That is the problem."
+          data-id="Model bahasa akan menjawab pertanyaan apa pun. Itulah masalahnya."></h2>
+      <p class="t"
+         data-en="Ask a plain model about a document it has never seen and it does not stop — it produces a fluent answer with no basis in the text. In a technical or commercial setting that failure is worse than silence, because the answer looks exactly like a correct one."
+         data-id="Tanyakan kepada model biasa tentang dokumen yang belum pernah dilihatnya, dan ia tidak akan berhenti — ia menghasilkan jawaban yang lancar tanpa dasar pada teks tersebut. Dalam konteks teknis atau bisnis, kegagalan itu lebih buruk daripada diam, karena jawabannya tampak persis seperti jawaban yang benar."></p>
+      <p class="t"
+         data-en="DocMind closes that gap with retrieval. Before the model is allowed to write anything, the system finds the passages in the document set that are closest in meaning to the question, hands only those to the model, and instructs it to answer from them and cite them. If the passages do not contain the answer, the system is required to say so."
+         data-id="DocMind menutup celah itu dengan retrieval. Sebelum model diizinkan menulis apa pun, sistem mencari bagian dokumen yang paling dekat maknanya dengan pertanyaan, memberikan hanya bagian itu kepada model, dan menginstruksikannya untuk menjawab dari sana serta menyebut sumbernya. Jika bagian tersebut tidak memuat jawabannya, sistem wajib mengatakannya."></p>
+    </section>
+
+    <section id="how">
+      <h2 class="t" data-en="How a question becomes a cited answer"
+          data-id="Bagaimana sebuah pertanyaan menjadi jawaban bersitasi"></h2>
+      <p class="lede t"
+         data-en="Four steps, all of them running on the same machine."
+         data-id="Empat langkah, semuanya berjalan di mesin yang sama."></p>
+
+      <ol class="pipe">
+        <li>
+          <b class="t" data-en="Index" data-id="Indeks"></b>
+          <span class="t"
+            data-en="Each document is split into passages of about 900 characters with 150 characters of overlap, so no sentence is cut away from its context. Every passage is converted into a vector that represents its meaning, and the vectors are stored in ChromaDB."
+            data-id="Setiap dokumen dipecah menjadi bagian sekitar 900 karakter dengan tumpang tindih 150 karakter, agar tidak ada kalimat yang terpotong dari konteksnya. Setiap bagian diubah menjadi vektor yang mewakili maknanya, lalu vektor disimpan di ChromaDB."></span>
+        </li>
+        <li>
+          <b class="t" data-en="Retrieve" data-id="Ambil"></b>
+          <span class="t"
+            data-en="The question is embedded with the same model and compared against every stored vector by cosine distance. The five closest passages come back, each with a similarity score."
+            data-id="Pertanyaan diubah menjadi vektor dengan model yang sama, lalu dibandingkan dengan seluruh vektor tersimpan memakai jarak kosinus. Lima bagian terdekat dikembalikan, masing-masing dengan skor kemiripan."></span>
+        </li>
+        <li>
+          <b class="t" data-en="Ground" data-id="Landaskan"></b>
+          <span class="t"
+            data-en="The retrieved passages are numbered and placed in the prompt as the only permitted evidence. The instruction is explicit: answer from these passages, cite each claim by number, and if the answer is absent, say so."
+            data-id="Bagian yang diambil diberi nomor dan dimasukkan ke prompt sebagai satu-satunya bukti yang diizinkan. Instruksinya tegas: jawab dari bagian ini, sebutkan nomor untuk setiap pernyataan, dan bila jawabannya tidak ada, katakan demikian."></span>
+        </li>
+        <li>
+          <b class="t" data-en="Answer" data-id="Jawab"></b>
+          <span class="t"
+            data-en="The model streams its answer token by token. Citation markers become links back to the passage they came from, and the retrieved passages stay on screen underneath, so any claim can be checked against its source in one glance."
+            data-id="Model mengalirkan jawabannya token demi token. Penanda sitasi menjadi tautan kembali ke bagian asalnya, dan bagian yang diambil tetap tampil di bawah, sehingga setiap pernyataan dapat diperiksa terhadap sumbernya dalam sekali lihat."></span>
+        </li>
+      </ol>
+    </section>
+
+    <section id="proof">
+      <h2 class="t" data-en="The running system" data-id="Sistem yang berjalan"></h2>
+      <p class="t"
+         data-en="Both images below are captures of the live application, not mockups. The first is the state after five documentation sources were indexed. The second is a real answer: one question spanning two unrelated sources, answered from both, with five retrieved passages ranked by score beneath it."
+         data-id="Dua gambar di bawah ini adalah tangkapan aplikasi yang berjalan, bukan mockup. Yang pertama adalah keadaan setelah lima sumber dokumentasi diindeks. Yang kedua adalah jawaban nyata: satu pertanyaan yang mencakup dua sumber berbeda, dijawab dari keduanya, dengan lima bagian terambil yang diurutkan berdasarkan skor di bawahnya."></p>
+
+      <figure>
+        <img src="assets/01-landing.png" alt="DocMind interface showing five indexed sources and 126 indexed passages">
+        <figcaption class="t"
+          data-en="Five sources, 126 passages. The left column lists every indexed document and its passage count; the header reports the model actually loaded."
+          data-id="Lima sumber, 126 bagian. Kolom kiri mencantumkan setiap dokumen yang diindeks beserta jumlah bagiannya; header menampilkan model yang benar-benar dimuat."></figcaption>
+      </figure>
+
+      <figure>
+        <img src="assets/02-answer.png" alt="A streamed answer with numbered citations and five retrieved passage cards">
+        <figcaption class="t"
+          data-en="A cross-source question — FastAPI path parameters and Oracle Cloud compute shapes in the same sentence. The answer draws on both, and each numbered marker traces back to a passage card."
+          data-id="Pertanyaan lintas sumber — parameter path FastAPI dan bentuk compute Oracle Cloud dalam satu kalimat. Jawabannya mengambil dari keduanya, dan setiap penanda bernomor dapat dilacak ke kartu bagiannya."></figcaption>
+      </figure>
+    </section>
+
+    <section id="stack">
+      <h2 class="t" data-en="What it is built from" data-id="Apa yang membangunnya"></h2>
+      <dl class="spec">
+        <div><dt>Retrieval</dt><dd class="t" data-en="ChromaDB persistent collection, cosine distance, top-k of 5." data-id="Koleksi persisten ChromaDB, jarak kosinus, top-k 5."></dd></div>
+        <div><dt>Embeddings</dt><dd class="t" data-en="all-MiniLM-L6-v2 running locally through ONNX. No embedding API, no per-query cost." data-id="all-MiniLM-L6-v2 berjalan lokal lewat ONNX. Tanpa API embedding, tanpa biaya per permintaan."></dd></div>
+        <div><dt>Generation</dt><dd class="t" data-en="Qwen2.5 3B served by Ollama on the same host, streaming over server-sent events." data-id="Qwen2.5 3B dilayani Ollama di host yang sama, dialirkan lewat server-sent events."></dd></div>
+        <div><dt>Service</dt><dd class="t" data-en="FastAPI on Uvicorn behind systemd, with an ingest API for URLs, pasted text and PDF uploads." data-id="FastAPI di Uvicorn di balik systemd, dengan API ingest untuk URL, teks tempel, dan unggahan PDF."></dd></div>
+        <div><dt>Hardware</dt><dd class="t" data-en="Four CPU cores and 24 GB of memory. No GPU is involved anywhere in the pipeline." data-id="Empat inti CPU dan memori 24 GB. Tidak ada GPU di seluruh alur ini."></dd></div>
+        <div><dt>Latency</dt><dd class="t" data-en="Roughly 20 seconds for a full answer at this size, streamed so the first words appear in about a second." data-id="Sekitar 20 detik untuk jawaban penuh pada ukuran ini, dialirkan sehingga kata pertama muncul dalam sekitar satu detik."></dd></div>
+      </dl>
+    </section>
+
+    <section id="limits">
+      <h2 class="t" data-en="Where it stops being good" data-id="Di mana kualitasnya mulai berhenti"></h2>
+      <p class="t"
+         data-en="A three-billion-parameter model running on CPU is a deliberate trade. It answers cleanly when the retrieved passages contain the answer, and it is noticeably weaker at synthesis across many passages or at following multi-part instructions. The retrieval step, not the model, is where most of the quality lives — which is why chunk size, overlap and top-k are the settings worth tuning first."
+         data-id="Model tiga miliar parameter di CPU adalah pilihan yang disengaja. Ia menjawab dengan rapi ketika bagian yang diambil memuat jawabannya, tetapi jelas lebih lemah dalam menyintesis banyak bagian atau mengikuti instruksi bertingkat. Sebagian besar kualitas justru terletak pada langkah retrieval, bukan pada modelnya — karena itu ukuran potongan, tumpang tindih, dan top-k adalah pengaturan yang paling layak disetel lebih dahulu."></p>
+      <p class="t"
+         data-en="Ingestion is deliberately closed. Writing to the index and fetching remote pages are operator actions behind a token, and every fetched URL is resolved and checked against private, loopback and link-local address ranges before any request is made — the index cannot be turned into a probe of the machine it runs on."
+         data-id="Proses ingest sengaja ditutup. Menulis ke indeks dan mengambil halaman jarak jauh adalah tindakan operator di balik token, dan setiap URL yang diambil diperiksa terhadap rentang alamat privat, loopback, dan link-local sebelum permintaan dijalankan — indeks tidak dapat dijadikan alat penyelidikan terhadap mesin tempat ia berjalan."></p>
+    </section>
+
+  </div>
+
+  <aside class="rail">
+    <h4 class="t" data-en="Retrieved for the question below" data-id="Diambil untuk pertanyaan di bawah"></h4>
+    <div class="card"><span class="score">0.71</span><b>Path Parameters — FastAPI</b>
+      <p class="t" data-en="Path parameters are declared in the route decorator with braces, and the type annotation on the function argument performs the conversion." data-id="Parameter path dideklarasikan pada dekorator rute memakai kurung kurawal, dan anotasi tipe pada argumen fungsi melakukan konversinya."></p></div>
+    <div class="card"><span class="score">0.64</span><b>Overview of the Compute Service</b>
+      <p class="t" data-en="A shape is the CPU, memory and resource profile of an instance, chosen when the instance is launched." data-id="Shape adalah profil CPU, memori, dan sumber daya sebuah instance, dipilih saat instance diluncurkan."></p></div>
+    <div class="card"><span class="score">0.58</span><b>Coroutines and tasks — Python</b>
+      <p class="t" data-en="A coroutine is declared with async def and does not begin executing until it is awaited or scheduled." data-id="Coroutine dideklarasikan dengan async def dan tidak mulai berjalan sebelum di-await atau dijadwalkan."></p></div>
+    <p class="note t"
+       data-en="These are the real passage cards the interface renders beneath an answer. Their scores are the cosine similarities that selected them."
+       data-id="Ini adalah kartu bagian sebenarnya yang ditampilkan antarmuka di bawah jawaban. Skornya adalah kemiripan kosinus yang memilihnya."></p>
+  </aside>
+
+</div>
+</div>
+
+<section class="closing">
+  <div class="wrap">
+    <h2 class="t" data-en="Ask it something." data-id="Coba tanyakan sesuatu."></h2>
+    <p class="t"
+       data-en="The demo is live and open. It is indexed against public technical documentation, so questions about FastAPI, Python asyncio, Docker or Oracle Cloud compute will retrieve real passages. Anything outside that set is a fair test too — a grounded system should tell you it does not know."
+       data-id="Demo ini aktif dan terbuka. Indeksnya berisi dokumentasi teknis publik, sehingga pertanyaan tentang FastAPI, asyncio Python, Docker, atau compute Oracle Cloud akan mengambil bagian yang nyata. Pertanyaan di luar itu juga uji yang adil — sistem yang terlandaskan seharusnya mengatakan bahwa ia tidak tahu."></p>
+    <div class="links">
+      <a href="http://129.225.4.69" target="_blank" rel="noopener">129.225.4.69</a>
+      <a href="https://github.com/DarthSandD/docmind" target="_blank" rel="noopener">Source on GitHub</a>
+      <a class="quiet" href="https://darrenlin.pages.dev" target="_blank" rel="noopener">Darren Lin — main portfolio</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span class="mono">DocMind · built by Darren Lin · <span id="yr"></span></span>
+  </div>
+</footer>
+
+<script>
+function setLang(lang){
+  document.documentElement.lang = lang;
+  document.querySelectorAll('.t').forEach(function(el){
+    var v = el.getAttribute('data-' + lang);
+    if (v !== null) el.textContent = v;
+  });
+  document.getElementById('btn-en').setAttribute('aria-pressed', lang === 'en');
+  document.getElementById('btn-id').setAttribute('aria-pressed', lang === 'id');
+  try { localStorage.setItem('docmind-lang', lang); } catch (e) {}
+}
+document.getElementById('yr').textContent = new Date().getFullYear();
+var saved = null;
+try { saved = localStorage.getItem('docmind-lang'); } catch (e) {}
+if (!saved) {
+  saved = (navigator.language || 'en').toLowerCase().indexOf('id') === 0 ? 'id' : 'en';
+}
+setLang(saved);
+</script>
+</body>
+</html>
